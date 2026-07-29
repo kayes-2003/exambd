@@ -1,0 +1,353 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")   // pooled (pgbouncer) connection for the app
+  directUrl = env("DIRECT_URL")     // direct connection, used for migrations
+}
+
+// ---------------- IDENTITY ----------------
+model Role {
+  id    Int    @id
+  name  String @unique // super_admin | admin | student
+  users User[]
+}
+
+// Mirrors auth.users (Supabase-managed). id is the SAME uuid as auth.users.id.
+model User {
+  id              String    @id @db.Uuid
+  roleId          Int       @map("role_id")
+  role            Role      @relation(fields: [roleId], references: [id])
+  fullName        String    @map("full_name")
+  phone           String?   @unique
+  phoneVerifiedAt DateTime? @map("phone_verified_at")
+  avatarUrl       String?   @map("avatar_url")
+  institution     String?
+  isActive        Boolean   @default(true) @map("is_active")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  createdQuestions Question[]     @relation("QuestionCreatedBy")
+  updatedQuestions Question[]     @relation("QuestionUpdatedBy")
+  createdExams     Exam[]
+  attempts         ExamAttempt[]
+  bookmarks        Bookmark[]
+  notifications    Notification[]
+  auditLogs        AuditLog[]
+  activityLogs     ActivityLog[]
+
+  @@map("users")
+}
+
+// ---------------- TAXONOMY ----------------
+model Subject {
+  id           String    @id @default(uuid()) @db.Uuid
+  name         String
+  slug         String    @unique
+  examCategory String    @map("exam_category")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  chapters     Chapter[]
+  questions    Question[]
+  examSubjects ExamSubject[]
+
+  @@map("subjects")
+}
+
+model Chapter {
+  id        String   @id @default(uuid()) @db.Uuid
+  subjectId String   @map("subject_id") @db.Uuid
+  subject   Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  name      String
+  ordering  Int      @default(0)
+  topics    Topic[]
+  questions Question[]
+
+  @@map("chapters")
+}
+
+model Topic {
+  id        String    @id @default(uuid()) @db.Uuid
+  chapterId String    @map("chapter_id") @db.Uuid
+  chapter   Chapter   @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  name      String
+  ordering  Int       @default(0)
+  questions Question[]
+
+  @@map("topics")
+}
+
+model Tag {
+  id    String        @id @default(uuid()) @db.Uuid
+  name  String        @unique
+  links QuestionTag[]
+
+  @@map("tags")
+}
+
+// ---------------- QUESTIONS ----------------
+model Question {
+  id             String   @id @default(uuid()) @db.Uuid
+  questionText   String   @map("question_text")
+  questionType   String   @default("single_choice") @map("question_type")
+  subjectId      String   @map("subject_id") @db.Uuid
+  subject        Subject  @relation(fields: [subjectId], references: [id])
+  chapterId      String?  @map("chapter_id") @db.Uuid
+  chapter        Chapter? @relation(fields: [chapterId], references: [id])
+  topicId        String?  @map("topic_id") @db.Uuid
+  topic          Topic?   @relation(fields: [topicId], references: [id])
+  difficulty     String
+  marks          Decimal  @default(1) @db.Decimal(5, 2)
+  negativeMarks  Decimal  @default(0) @map("negative_marks") @db.Decimal(5, 2)
+  language       String   @default("bn")
+  explanation    String?
+  reference      String?
+  videoUrl       String?  @map("video_url")
+  status         String   @default("draft")
+  createdBy      String   @map("created_by") @db.Uuid
+  createdByUser  User     @relation("QuestionCreatedBy", fields: [createdBy], references: [id])
+  updatedBy      String?  @map("updated_by") @db.Uuid
+  updatedByUser  User?    @relation("QuestionUpdatedBy", fields: [updatedBy], references: [id])
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  options        QuestionOption[]
+  media          QuestionMedia[]
+  tags           QuestionTag[]
+  reports        QuestionReport[]
+  examQuestions  ExamQuestion[]
+  bookmarks      Bookmark[]
+
+  @@map("questions")
+}
+
+model QuestionTag {
+  questionId String   @map("question_id") @db.Uuid
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  tagId      String   @map("tag_id") @db.Uuid
+  tag        Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([questionId, tagId])
+  @@map("question_tags")
+}
+
+model QuestionMedia {
+  id          String   @id @default(uuid()) @db.Uuid
+  questionId  String   @map("question_id") @db.Uuid
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  storagePath String   @map("storage_path") // Supabase Storage object path
+  mediaType   String   @map("media_type")   // image | diagram
+  altText     String?  @map("alt_text")
+
+  @@map("question_media")
+}
+
+// The security-critical table: never serialized directly to students.
+model QuestionOption {
+  id         String   @id @default(uuid()) @db.Uuid
+  questionId String   @map("question_id") @db.Uuid
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  optionText String   @map("option_text")
+  isCorrect  Boolean  @default(false) @map("is_correct")
+  ordering   Int      @default(0)
+
+  attemptOptions ExamAttemptOption[]
+  studentAnswers StudentAnswer[]
+
+  @@map("question_options")
+}
+
+model QuestionReport {
+  id         String   @id @default(uuid()) @db.Uuid
+  questionId String   @map("question_id") @db.Uuid
+  question   Question @relation(fields: [questionId], references: [id])
+  reportedBy String?  @map("reported_by") @db.Uuid
+  reason     String
+  status     String   @default("open")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("question_reports")
+}
+
+// ---------------- EXAMS ----------------
+model Exam {
+  id               String   @id @default(uuid()) @db.Uuid
+  title            String
+  slug             String   @unique
+  description      String?
+  durationMinutes  Int      @map("duration_minutes")
+  startTime        DateTime? @map("start_time")
+  endTime          DateTime? @map("end_time")
+  totalQuestions   Int      @map("total_questions")
+  isRandomized     Boolean  @default(true) @map("is_randomized")
+  difficultyFilter String?  @map("difficulty_filter")
+  negativeMarking  Decimal  @default(0) @map("negative_marking") @db.Decimal(4, 2)
+  passingMarks     Decimal? @map("passing_marks") @db.Decimal(6, 2)
+  maxAttempts      Int      @default(1) @map("max_attempts")
+  passwordHash     String?  @map("password_hash")
+  instructions     String?
+  autoSubmit       Boolean  @default(true) @map("auto_submit")
+  status           String   @default("draft")
+  createdBy        String   @map("created_by") @db.Uuid
+  createdByUser    User     @relation(fields: [createdBy], references: [id])
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  examSubjects  ExamSubject[]
+  examQuestions ExamQuestion[]
+  attempts      ExamAttempt[]
+
+  @@map("exams")
+}
+
+model ExamSubject {
+  examId        String  @map("exam_id") @db.Uuid
+  exam          Exam    @relation(fields: [examId], references: [id], onDelete: Cascade)
+  subjectId     String  @map("subject_id") @db.Uuid
+  subject       Subject @relation(fields: [subjectId], references: [id])
+  questionCount Int     @map("question_count")
+
+  @@id([examId, subjectId])
+  @@map("exam_subjects")
+}
+
+model ExamQuestion {
+  examId     String   @map("exam_id") @db.Uuid
+  exam       Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+  questionId String   @map("question_id") @db.Uuid
+  question   Question @relation(fields: [questionId], references: [id])
+  ordering   Int      @default(0)
+
+  @@id([examId, questionId])
+  @@map("exam_questions")
+}
+
+// ---------------- ATTEMPTS ----------------
+model ExamAttempt {
+  id               String    @id @default(uuid()) @db.Uuid
+  examId           String    @map("exam_id") @db.Uuid
+  exam             Exam      @relation(fields: [examId], references: [id])
+  studentId        String    @map("student_id") @db.Uuid
+  student          User      @relation(fields: [studentId], references: [id])
+  attemptNumber    Int       @default(1) @map("attempt_number")
+  status           String    @default("in_progress")
+  startedAt        DateTime  @default(now()) @map("started_at")
+  submittedAt      DateTime? @map("submitted_at")
+  score            Decimal?  @db.Decimal(7, 2)
+  correctCount     Int?      @map("correct_count")
+  wrongCount       Int?      @map("wrong_count")
+  skippedCount     Int?      @map("skipped_count")
+  rank             Int?
+  percentile       Decimal?  @db.Decimal(5, 2)
+  sessionToken     String    @default(uuid()) @map("session_token") @db.Uuid
+  deviceFingerprint String?  @map("device_fingerprint")
+  ipAddress        String?   @map("ip_address")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  attemptQuestions ExamAttemptQuestion[]
+  attemptOptions   ExamAttemptOption[]
+  answers          StudentAnswer[]
+  proctoringEvents ProctoringEvent[]
+
+  @@map("exam_attempts")
+}
+
+model ExamAttemptQuestion {
+  attemptId    String      @map("attempt_id") @db.Uuid
+  attempt      ExamAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId   String      @map("question_id") @db.Uuid
+  displayOrder Int         @map("display_order")
+
+  @@id([attemptId, questionId])
+  @@map("exam_attempt_questions")
+}
+
+// Per-attempt shuffled label -> option_id map. THIS is what students ever see.
+model ExamAttemptOption {
+  attemptId    String         @map("attempt_id") @db.Uuid
+  attempt      ExamAttempt    @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId   String         @map("question_id") @db.Uuid
+  optionId     String         @map("option_id") @db.Uuid
+  option       QuestionOption @relation(fields: [optionId], references: [id])
+  displayLabel String         @map("display_label") // A..F
+
+  @@id([attemptId, questionId, optionId])
+  @@map("exam_attempt_options")
+}
+
+model StudentAnswer {
+  attemptId         String          @map("attempt_id") @db.Uuid
+  attempt           ExamAttempt     @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId        String          @map("question_id") @db.Uuid
+  selectedOptionId  String?         @map("selected_option_id") @db.Uuid
+  selectedOption    QuestionOption? @relation(fields: [selectedOptionId], references: [id])
+  isMarkedForReview Boolean         @default(false) @map("is_marked_for_review")
+  isVisited         Boolean         @default(false) @map("is_visited")
+  timeSpentSeconds  Int             @default(0) @map("time_spent_seconds")
+  answeredAt        DateTime?       @map("answered_at")
+
+  @@id([attemptId, questionId])
+  @@map("student_answers")
+}
+
+model ProctoringEvent {
+  id         String      @id @default(uuid()) @db.Uuid
+  attemptId  String      @map("attempt_id") @db.Uuid
+  attempt    ExamAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  eventType  String      @map("event_type")
+  metadata   Json?
+  createdAt  DateTime    @default(now()) @map("created_at")
+
+  @@map("proctoring_events")
+}
+
+// ---------------- ENGAGEMENT ----------------
+model Bookmark {
+  studentId  String   @map("student_id") @db.Uuid
+  student    User     @relation(fields: [studentId], references: [id])
+  questionId String   @map("question_id") @db.Uuid
+  question   Question @relation(fields: [questionId], references: [id])
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@id([studentId, questionId])
+  @@map("bookmarks")
+}
+
+model Notification {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  user      User     @relation(fields: [userId], references: [id])
+  type      String
+  title     String
+  body      String?
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("notifications")
+}
+
+// ---------------- AUDIT / LOGS ----------------
+model AuditLog {
+  id         BigInt   @id @default(autoincrement())
+  actorId    String?  @map("actor_id") @db.Uuid
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id") @db.Uuid
+  diff       Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("audit_logs")
+}
+
+model ActivityLog {
+  id        BigInt   @id @default(autoincrement())
+  userId    String?  @map("user_id") @db.Uuid
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("activity_logs")
+}
